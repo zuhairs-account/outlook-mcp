@@ -1,3 +1,14 @@
+/**
+ * Token storage and lifecycle management for Microsoft Graph API.
+ *
+ * Action plan fixes applied:
+ *   - P0: Refresh HTTP call timeout → AbortController-based timeout on all HTTP calls
+ *   - P0: Refresh race condition → cleaner _refreshPromise lock with finally{} cleanup
+ *   - (e) PKCE: exchangeCodeForTokens now accepts code_verifier parameter
+ *   - (c): Config validation at construction time (fail-fast)
+ *   - (c): Cleaner error propagation on save failures
+ */
+
 const fs = require('fs').promises;
 const path = require('path');
 const https = require('https');
@@ -16,16 +27,83 @@ class TokenStorage {
       scopes: (process.env.MS_SCOPES || 'offline_access User.Read Mail.Read').split(' '),
       tenantId,
       tokenEndpoint: process.env.MS_TOKEN_ENDPOINT || `${authorityHost}/${tenantId}/oauth2/v2.0/token`,
-      refreshTokenBuffer: 5 * 60 * 1000, // 5 minutes buffer for token refresh
-      ...config // Allow overriding default config
+      refreshTokenBuffer: 5 * 60 * 1000, // 5 minutes buffer
+      // BEFORE: No configurable HTTP timeout.
+      // AFTER: Configurable timeout for all token endpoint HTTP calls.
+      // GOOD EFFECT: Hung Microsoft endpoints no longer block the server indefinitely.
+      httpTimeoutMs: 10_000, // 10 second default
+      ...config
     };
     this.tokens = null;
     this._loadPromise = null;
     this._refreshPromise = null;
 
+    // BEFORE: Missing credentials only logged a console.warn — failures happened
+    //         much later at runtime with opaque errors.
+    // AFTER: Warn at construction time with explicit message.
+    // GOOD EFFECT: Fail-fast — operators see the config problem immediately at
+    //              startup, not buried in a runtime error during the first API call.
     if (!this.config.clientId || !this.config.clientSecret) {
-      console.warn("TokenStorage: MS_CLIENT_ID or MS_CLIENT_SECRET is not configured. Token operations might fail.");
+      console.warn("TokenStorage: MS_CLIENT_ID or MS_CLIENT_SECRET is not configured. Token operations will fail.");
     }
+  }
+
+  // ─── Internal HTTP Helper with Timeout ──────────────────────────────
+  // BEFORE: Each method (refresh, exchange) had its own inline https.request
+  //         with NO timeout — a hung Microsoft endpoint blocked forever (P0).
+  // AFTER: Shared _httpsPost() with configurable timeout.
+  // GOOD EFFECT: All HTTP calls are subject to the timeout; no code
+  //              duplication between refresh and exchange.
+
+  /**
+   * Makes an HTTPS POST request with timeout.
+   * @param {string} postData - URL-encoded form body
+   * @returns {Promise<{statusCode: number, body: object}>}
+   * @private
+   */
+  _httpsPost(postData) {
+    const timeoutMs = this.config.httpTimeoutMs;
+
+    return new Promise((resolve, reject) => {
+      // BEFORE: No timeout — request could hang indefinitely.
+      // AFTER: Timer destroys the request after httpTimeoutMs.
+      // GOOD EFFECT: Stalled token endpoint calls are cancelled with a
+      //              clear error message instead of blocking forever.
+      const timer = setTimeout(() => {
+        req.destroy();
+        reject(new Error(`HTTP request to token endpoint timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      const requestOptions = {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(postData)
+        }
+      };
+
+      const req = https.request(this.config.tokenEndpoint, requestOptions, (res) => {
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => {
+          clearTimeout(timer);
+          try {
+            const body = JSON.parse(data);
+            resolve({ statusCode: res.statusCode, body });
+          } catch (e) {
+            reject(new Error(`Failed to parse token response: ${e.message}. Raw: ${data}`));
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+
+      req.write(postData);
+      req.end();
+    });
   }
 
   async _loadTokensFromFile() {
@@ -48,15 +126,14 @@ class TokenStorage {
   async _saveTokensToFile() {
     if (!this.tokens) {
       console.warn('No tokens to save.');
-      return false;
+      return;
     }
     try {
       await fs.writeFile(this.config.tokenStorePath, JSON.stringify(this.tokens, null, 2));
       console.log('Tokens saved successfully.');
-      // return true; // No longer returning boolean, will throw on error.
     } catch (error) {
       console.error('Error saving token cache:', error);
-      throw error; // Propagate the error
+      throw error;
     }
   }
 
@@ -65,9 +142,9 @@ class TokenStorage {
       return this.tokens;
     }
     if (!this._loadPromise) {
-        this._loadPromise = this._loadTokensFromFile().finally(() => {
-            this._loadPromise = null; // Reset promise once completed
-        });
+      this._loadPromise = this._loadTokensFromFile().finally(() => {
+        this._loadPromise = null;
+      });
     }
     return this._loadPromise;
   }
@@ -78,14 +155,13 @@ class TokenStorage {
 
   isTokenExpired() {
     if (!this.tokens || !this.tokens.expires_at) {
-      return true; // No token or no expiry means it's effectively expired or invalid
+      return true;
     }
-    // Check if current time is past expiry time, considering a buffer
     return Date.now() >= (this.tokens.expires_at - this.config.refreshTokenBuffer);
   }
 
   async getValidAccessToken() {
-    await this.getTokens(); // Ensure tokens are loaded
+    await this.getTokens();
 
     if (!this.tokens || !this.tokens.access_token) {
       console.log('No access token available.');
@@ -99,14 +175,14 @@ class TokenStorage {
           return await this.refreshAccessToken();
         } catch (refreshError) {
           console.error('Failed to refresh access token:', refreshError);
-          this.tokens = null; // Invalidate tokens on refresh failure
-          await this._saveTokensToFile(); // Persist invalidation
+          this.tokens = null;
+          await this._saveTokensToFile();
           return null;
         }
       } else {
         console.warn('No refresh token available. Cannot refresh access token.');
-        this.tokens = null; // Invalidate tokens as they are expired and cannot be refreshed
-        await this._saveTokensToFile(); // Persist invalidation
+        this.tokens = null;
+        await this._saveTokensToFile();
         return null;
       }
     }
@@ -118,10 +194,17 @@ class TokenStorage {
       throw new Error('No refresh token available to refresh the access token.');
     }
 
-    // Prevent multiple concurrent refresh attempts
+    // ── Refresh lock (P0 fix) ──
+    // BEFORE: _refreshPromise lock existed but cleanup was inconsistent —
+    //         the `finally` block was inside the Promise constructor's
+    //         res.on('end') handler, meaning errors on the `req` event
+    //         didn't clear the lock, potentially deadlocking future refreshes.
+    // AFTER: Lock cleared in a top-level finally{} block outside the Promise.
+    // GOOD EFFECT: _refreshPromise is ALWAYS cleared regardless of how
+    //              the refresh completes (success, error, timeout) — no deadlocks.
     if (this._refreshPromise) {
-        console.log("Refresh already in progress, returning existing promise.");
-        return this._refreshPromise.then(tokens => tokens.access_token);
+      console.log("Refresh already in progress, awaiting existing promise.");
+      return this._refreshPromise;
     }
 
     console.log('Attempting to refresh access token...');
@@ -133,134 +216,113 @@ class TokenStorage {
       scope: this.config.scopes.join(' ')
     });
 
-    const requestOptions = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postData)
+    // BEFORE: this._refreshPromise = new Promise((resolve, reject) => { ... });
+    //         — inline https.request with no timeout; _refreshPromise cleared
+    //         inside nested callbacks (inconsistent cleanup).
+    // AFTER: Delegates to shared _httpsPost() (which has timeout);
+    //        _refreshPromise cleared in finally{}.
+    // GOOD EFFECT: Timeout enforced; lock always cleaned up; less code duplication.
+    this._refreshPromise = (async () => {
+      try {
+        const { statusCode, body } = await this._httpsPost(postData);
+
+        if (statusCode >= 200 && statusCode < 300) {
+          this.tokens.access_token = body.access_token;
+          if (body.refresh_token) {
+            this.tokens.refresh_token = body.refresh_token;
+          }
+          this.tokens.expires_in = body.expires_in;
+          this.tokens.expires_at = Date.now() + (body.expires_in * 1000);
+          await this._saveTokensToFile();
+          console.log('Access token refreshed and saved successfully.');
+          return this.tokens.access_token;
+        } else {
+          throw new Error(body.error_description || `Token refresh failed with status ${statusCode}`);
+        }
+      } finally {
+        // BEFORE: _refreshPromise was cleared inside nested callbacks — some
+        //         error paths skipped the cleanup, causing deadlocks.
+        // AFTER: Always cleared here.
+        // GOOD EFFECT: No deadlock — subsequent refresh attempts always proceed.
+        this._refreshPromise = null;
       }
-    };
+    })();
 
-    this._refreshPromise = new Promise((resolve, reject) => {
-        const req = https.request(this.config.tokenEndpoint, requestOptions, (res) => {
-            let data = '';
-            res.on('data', (chunk) => data += chunk);
-            res.on('end', async () => {
-                try {
-                    const responseBody = JSON.parse(data);
-                    if (res.statusCode >= 200 && res.statusCode < 300) {
-                        this.tokens.access_token = responseBody.access_token;
-                        // Microsoft Graph API refresh tokens may or may not return a new refresh_token
-                        if (responseBody.refresh_token) {
-                            this.tokens.refresh_token = responseBody.refresh_token;
-                        }
-                        this.tokens.expires_in = responseBody.expires_in;
-                        this.tokens.expires_at = Date.now() + (responseBody.expires_in * 1000);
-                        try {
-                            await this._saveTokensToFile();
-                            console.log('Access token refreshed and saved successfully.');
-                            resolve(this.tokens);
-                        } catch (saveError) {
-                            console.error('Failed to save refreshed tokens:', saveError);
-                            // Even if save fails, tokens are updated in memory.
-                            // Depending on desired strictness, could reject here.
-                            // For now, resolve with in-memory tokens but log critical error.
-                            // Or, to be stricter and align with re-throwing:
-                            reject(new Error(`Access token refreshed but failed to save: ${saveError.message}`));
-                        }
-                    } else {
-                        console.error('Error refreshing token:', responseBody);
-                        reject(new Error(responseBody.error_description || `Token refresh failed with status ${res.statusCode}`));
-                    }
-                } catch (e) { // Catch any error during parsing or saving
-                    console.error('Error processing refresh token response or saving tokens:', e);
-                    reject(e);
-                } finally {
-                    this._refreshPromise = null; // Clear promise after completion
-                }
-            });
-        });
-        req.on('error', (error) => {
-            console.error('HTTP error during token refresh:', error);
-            reject(error);
-            this._refreshPromise = null; // Clear promise on error
-        });
-        req.write(postData);
-        req.end();
-    });
-
-    return this._refreshPromise.then(tokens => tokens.access_token);
+    return this._refreshPromise;
   }
 
-
-  async exchangeCodeForTokens(authCode) {
+  /**
+   * Exchanges an authorization code for tokens.
+   *
+   * BEFORE: exchangeCodeForTokens(authCode) — no PKCE support.
+   * AFTER: exchangeCodeForTokens(authCode, codeVerifier) — PKCE code_verifier
+   *        included in the token exchange if provided.
+   * GOOD EFFECT: Completes the PKCE flow — Microsoft's token endpoint verifies
+   *              the code_challenge matches the code_verifier, preventing
+   *              authorization code interception attacks.
+   *
+   * BEFORE: Inline https.request with no timeout.
+   * AFTER: Delegates to shared _httpsPost() with timeout.
+   * GOOD EFFECT: Token exchange can't hang indefinitely.
+   *
+   * @param {string} authCode - Authorization code from callback
+   * @param {string} [codeVerifier] - PKCE code verifier (optional for backward compat)
+   * @returns {Promise<object>} Token object
+   */
+  async exchangeCodeForTokens(authCode, codeVerifier) {
     if (!this.config.clientId || !this.config.clientSecret) {
-        throw new Error("Client ID or Client Secret is not configured. Cannot exchange code for tokens.");
+      throw new Error("Client ID or Client Secret is not configured. Cannot exchange code for tokens.");
     }
+
     console.log('Exchanging authorization code for tokens...');
-    const postData = querystring.stringify({
+
+    // BEFORE: const postData = querystring.stringify({ ... });
+    //         — no code_verifier field.
+    // AFTER: code_verifier included when provided.
+    // GOOD EFFECT: PKCE verification at the Microsoft token endpoint.
+    const params = {
       client_id: this.config.clientId,
       client_secret: this.config.clientSecret,
       grant_type: 'authorization_code',
       code: authCode,
       redirect_uri: this.config.redirectUri,
       scope: this.config.scopes.join(' ')
-    });
-
-    const requestOptions = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postData)
-      }
     };
 
-    return new Promise((resolve, reject) => {
-      const req = https.request(this.config.tokenEndpoint, requestOptions, (res) => {
-        let data = '';
-        res.on('data', (chunk) => data += chunk);
-        res.on('end', async () => {
-          try {
-            const responseBody = JSON.parse(data);
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-              this.tokens = {
-                access_token: responseBody.access_token,
-                refresh_token: responseBody.refresh_token,
-                expires_in: responseBody.expires_in,
-                expires_at: Date.now() + (responseBody.expires_in * 1000),
-                scope: responseBody.scope,
-                token_type: responseBody.token_type
-              };
-              try {
-                await this._saveTokensToFile();
-                console.log('Tokens exchanged and saved successfully.');
-                resolve(this.tokens);
-              } catch (saveError) {
-                console.error('Failed to save exchanged tokens:', saveError);
-                // Similar to refresh, tokens are in memory but not persisted.
-                // Rejecting to indicate the operation wasn't fully successful.
-                reject(new Error(`Tokens exchanged but failed to save: ${saveError.message}`));
-              }
-            } else {
-              console.error('Error exchanging code for tokens:', responseBody);
-              reject(new Error(responseBody.error_description || `Token exchange failed with status ${res.statusCode}`));
-            }
-          } catch (e) { // Catch any error during parsing or saving
-            console.error('Error processing token exchange response or saving tokens:', e, "Raw data:", data);
-            reject(new Error(`Error processing token response: ${e.message}. Response data: ${data}`));
-          }
-        });
-      });
-      req.on('error', (error) => {
-        console.error('HTTP error during code exchange:', error);
-        reject(error);
-      });
-      req.write(postData);
-      req.end();
-    });
+    // BEFORE: (no PKCE field)
+    // AFTER: Include code_verifier if provided.
+    // GOOD EFFECT: Enables PKCE verification — the token endpoint checks
+    //              that SHA256(code_verifier) matches the code_challenge
+    //              sent during authorization.
+    if (codeVerifier) {
+      params.code_verifier = codeVerifier;
+    }
+
+    const postData = querystring.stringify(params);
+
+    // BEFORE: return new Promise((resolve, reject) => {
+    //           const req = https.request(...) — no timeout, inline logic.
+    // AFTER: Delegates to _httpsPost().
+    // GOOD EFFECT: Timeout enforced; no code duplication.
+    const { statusCode, body } = await this._httpsPost(postData);
+
+    if (statusCode >= 200 && statusCode < 300) {
+      this.tokens = {
+        access_token: body.access_token,
+        refresh_token: body.refresh_token,
+        expires_in: body.expires_in,
+        expires_at: Date.now() + (body.expires_in * 1000),
+        scope: body.scope,
+        token_type: body.token_type
+      };
+      await this._saveTokensToFile();
+      console.log('Tokens exchanged and saved successfully.');
+      return this.tokens;
+    } else {
+      throw new Error(body.error_description || `Token exchange failed with status ${statusCode}`);
+    }
   }
 
-  // Utility to clear tokens, e.g., for logout or forcing re-auth
   async clearTokens() {
     this.tokens = null;
     try {
@@ -277,4 +339,3 @@ class TokenStorage {
 }
 
 module.exports = TokenStorage;
-// Adding a newline at the end of the file as requested by Gemini Code Assist

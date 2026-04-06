@@ -18,13 +18,16 @@
  *         module init hooks (currently all sync, but pattern established)
  *   - (e) index.js: No request timeout → AbortController-based timeout wrapper on
  *         every handler invocation
+ *   - (fix) index.js: Auth handler dependencies bound before registration (Bug 3)
  */
 const { Server } = require("@modelcontextprotocol/sdk/server/index.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const config = require('./config');
 
 // Import module tools
-const { authTools } = require('./auth');
+// BEFORE: const { authTools } = require('./auth');
+// AFTER: Also import createTokenManager for Bug 3 fix (auth handler DI).
+const { authTools, createTokenManager } = require('./auth');
 const { calendarTools } = require('./calendar');
 const { emailTools } = require('./email');
 const { folderTools } = require('./folder');
@@ -139,6 +142,29 @@ console.error(`Test mode is ${config.USE_TEST_MODE ? 'enabled' : 'disabled'}`);
 // GOOD EFFECT: Faster dispatch; duplicate tool names caught at startup.
 const registry = new ToolRegistry();
 
+// ─── Bug 3 fix: bind dependencies into auth handlers BEFORE registering ──
+// BEFORE: registry.registerTools(authTools) — handlers called as handler(args)
+//         but handleAuthenticate(args, authConfig, tokenManager) needs 3 params;
+//         handleCheckAuthStatus(tokenManager) needs 1; handleAbout(serverConfig)
+//         needs 1. authConfig and tokenManager were always undefined → TypeError.
+// AFTER: Wrap each auth handler in a closure that injects the right dependencies,
+//        so the registry can call every handler uniformly as handler(args).
+// GOOD EFFECT: Auth tools work correctly; DI pattern is explicit and testable;
+//              no changes needed in tools.js or anywhere else.
+const tokenManager = createTokenManager(config);
+const boundAuthTools = authTools.map(tool => {
+  switch (tool.name) {
+    case 'about':
+      return { ...tool, handler: (_args) => tool.handler(config) };
+    case 'authenticate':
+      return { ...tool, handler: (args) => tool.handler(args, config.AUTH_CONFIG, tokenManager) };
+    case 'check-auth-status':
+      return { ...tool, handler: (_args) => tool.handler(tokenManager) };
+    default:
+      return tool;
+  }
+});
+
 // BEFORE: All module getTools() calls were sequential at boot. Negligible
 //         cost now, but if any module does I/O at registration time this
 //         blocks the entire startup.
@@ -146,7 +172,9 @@ const registry = new ToolRegistry();
 //        easily become async (Promise.all) if modules gain init hooks.
 // GOOD EFFECT: Future-proofed for async module initialization.
 try {
-  registry.registerTools(authTools);
+  // BEFORE: registry.registerTools(authTools)
+  // AFTER: registry.registerTools(boundAuthTools) — handlers have deps injected.
+  registry.registerTools(boundAuthTools);
   registry.registerTools(calendarTools);
   registry.registerTools(emailTools);
   registry.registerTools(folderTools);
@@ -234,21 +262,7 @@ server.fallbackRequestHandler = async (request) => {
       // AFTER: withTimeout(handler, args) wraps every invocation.
       // GOOD EFFECT: Hung handlers are cancelled after 60s with a clear error.
       try {
-        // AFTER — create a bound wrapper at registration time in index.js:
-        const tokenManager = createTokenManager(config);
-        const boundAuthTools = authTools.map(tool => {
-          if (tool.name === 'authenticate') {
-            return { ...tool, handler: (args) => tool.handler(args, config.AUTH_CONFIG, tokenManager) };
-          }
-          if (tool.name === 'check-auth-status') {
-            return { ...tool, handler: (_args) => tool.handler(tokenManager) };
-          }
-          if (tool.name === 'about') {
-            return { ...tool, handler: (_args) => tool.handler(config) };
-          }
-          return tool;
-        });
-        registry.registerTools(boundAuthTools);
+        return await withTimeout(handler, args);
       } catch (handlerError) {
         // BEFORE: Handler exceptions propagated to the outer catch, which
         //         returned a generic error. No distinction between handler
@@ -300,6 +314,8 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // Start the server
+// Supergateway wraps this process and exposes it over SSE/HTTP.
+// StdioServerTransport is correct here — supergateway pipes stdin/stdout.
 const transport = new StdioServerTransport();
 server.connect(transport)
   .then(() => console.error(`${config.SERVER_NAME} v${config.SERVER_VERSION} connected and listening`))

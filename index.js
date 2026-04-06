@@ -234,7 +234,21 @@ server.fallbackRequestHandler = async (request) => {
       // AFTER: withTimeout(handler, args) wraps every invocation.
       // GOOD EFFECT: Hung handlers are cancelled after 60s with a clear error.
       try {
-        return await withTimeout(handler, args);
+        // AFTER — create a bound wrapper at registration time in index.js:
+        const tokenManager = createTokenManager(config);
+        const boundAuthTools = authTools.map(tool => {
+          if (tool.name === 'authenticate') {
+            return { ...tool, handler: (args) => tool.handler(args, config.AUTH_CONFIG, tokenManager) };
+          }
+          if (tool.name === 'check-auth-status') {
+            return { ...tool, handler: (_args) => tool.handler(tokenManager) };
+          }
+          if (tool.name === 'about') {
+            return { ...tool, handler: (_args) => tool.handler(config) };
+          }
+          return tool;
+        });
+        registry.registerTools(boundAuthTools);
       } catch (handlerError) {
         // BEFORE: Handler exceptions propagated to the outer catch, which
         //         returned a generic error. No distinction between handler

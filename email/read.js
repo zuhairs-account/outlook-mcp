@@ -176,8 +176,9 @@ async function handleReadEmail(args) {
       //              usable content without context-window overflow.
       let truncationNote = '';
       if (body.length > MAX_BODY_LENGTH) {
+        const originalLength = body.length;           // ← capture BEFORE slicing
         body = body.substring(0, MAX_BODY_LENGTH);
-        truncationNote = `\n[Body truncated at ${MAX_BODY_LENGTH} characters. Original length: ${body.length}]\n`;
+        truncationNote = `\n[Body truncated at ${MAX_BODY_LENGTH} characters. Original length: ${originalLength}]\n`;
       }
 
       // ── Attachment Listing ──

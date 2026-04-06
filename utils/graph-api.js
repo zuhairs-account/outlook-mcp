@@ -34,21 +34,32 @@ async function callGraphAPI(accessToken, method, path, data = null, queryParams 
       // Build URL from path and queryParams
       // Encode path segments properly
       const encodedPath = path.split('/')
-        .map(segment => encodeURIComponent(segment))
+        .map(segment => {
+          // If the segment is already percent-encoded, don't encode again
+          try {
+            const decoded = decodeURIComponent(segment);
+            return decoded === segment
+              ? encodeURIComponent(segment)   // not yet encoded → encode it
+              : segment;                      // already encoded → leave it alone
+          } catch {
+            return encodeURIComponent(segment); // malformed % sequence → encode safely
+          }
+        })
         .join('/');
       
       // Build query string from parameters with special handling for OData filters
       let queryString = '';
       if (Object.keys(queryParams).length > 0) {
         // Handle $filter parameter specially to ensure proper URI encoding
-        const filter = queryParams.$filter;
+        const localParams = { ...queryParams };          // defensive copy
+        const filter = localParams.$filter;
         if (filter) {
-          delete queryParams.$filter; // Remove from regular params
+          delete localParams.$filter; // Remove from regular params
         }
         
         // Build query string with proper encoding for regular params
         const params = new URLSearchParams();
-        for (const [key, value] of Object.entries(queryParams)) {
+        for (const [key, value] of Object.entries(localParams)) {
           params.append(key, value);
         }
         

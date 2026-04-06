@@ -32,32 +32,28 @@ function createTokenManager(config) {
  * @returns {Promise<string>} - Access token
  * @throws {Error} - If authentication fails
  */
+// AFTER
+const config = require('../config');
+
+// Module-level singleton — created once, reused on every call
+const _defaultTokenManager = new TokenManager(config);
+
 async function ensureAuthenticated(tokenManagerInstance, forceNew = false) {
-  // BEFORE: No error boundary — raw exceptions propagated to the MCP dispatch.
-  // AFTER: Entire function wrapped in try-catch.
-  // GOOD EFFECT: Prevents unhandled exceptions from crashing the MCP server process.
+  // If no instance injected (the common case across all 28 tool files),
+  // fall back to the module-level singleton. Injected instance still works
+  // for tests or callers that want to provide their own.
+  const tm = tokenManagerInstance || _defaultTokenManager;
+
   try {
     if (forceNew) {
       throw new Error('Authentication required. Please re-authenticate.');
     }
-
-    // BEFORE: const accessToken = tokenManager.getAccessToken();
-    //         — called synchronous getAccessToken() on a module-level singleton
-    // AFTER: await tokenManagerInstance.getValidAccessToken()
-    //        — uses injected instance, async, checks expiry + auto-refreshes
-    // GOOD EFFECT: Tokens are auto-refreshed if expired (no stale-token bugs),
-    //              and the injected instance makes this testable.
-    const accessToken = await tokenManagerInstance.getValidAccessToken();
+    const accessToken = await tm.getValidAccessToken();
     if (!accessToken) {
       throw new Error('Authentication required. No valid token found.');
     }
-
     return accessToken;
   } catch (error) {
-    // BEFORE: (no catch block existed)
-    // AFTER: Catch and re-throw with structured message.
-    // GOOD EFFECT: MCP client receives a descriptive error rather than
-    //              an opaque stack trace or process crash.
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Authentication failed: ${message}`);
   }

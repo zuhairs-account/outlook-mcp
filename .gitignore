@@ -34,3 +34,9 @@ Thumbs.db
 # Logs
 logs
 *.log
+
+.env
+test_langchain.py
+test_langchain2.py
+__pycache__/
+*.pyc

@@ -2,7 +2,7 @@
  * OneDrive create sharing link functionality
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 /**
  * Create sharing link handler
@@ -25,7 +25,8 @@ async function handleShare(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // First get the item ID if we only have path
     let resolvedItemId = itemId;

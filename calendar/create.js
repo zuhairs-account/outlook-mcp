@@ -10,7 +10,7 @@
  */
 const crypto = require('crypto');
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 const { DEFAULT_TIMEZONE } = require('../config');
 
 // BEFORE: Payload construction was inline imperative code with scattered conditionals.
@@ -62,7 +62,8 @@ async function handleCreateEvent(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // ── Payload Construction via Shared Builder ──
     // BEFORE: const bodyContent = { subject, start: { dateTime: ... }, ... };

@@ -10,7 +10,7 @@
  *   - (c) email/send.js: Error classification (auth, 403, 429)
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 // BEFORE: Recipient parsing was inline — split(',').map() with no validation.
 //         Malformed emails caused silent failures or cryptic Graph errors.
@@ -44,7 +44,8 @@ async function handleSendEmail(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // ── Recipient Parsing with Validation ──
     // BEFORE: const toRecipients = to.split(',').map(email => { ... });

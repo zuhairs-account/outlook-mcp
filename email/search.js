@@ -8,7 +8,7 @@
  *   - (c) email/index.js: Error classification (auth, 429, 403)
  */
 const { callGraphAPI, callGraphAPIPaginated } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 const { resolveFolderPath } = require('./folder-utils');
 
 // BEFORE: const config = require('../config');
@@ -91,7 +91,8 @@ async function handleSearchEmails(args) {
   const unreadOnly = args.unreadOnly;
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // Resolve the folder path
     const endpoint = await resolveFolderPath(accessToken, folder);

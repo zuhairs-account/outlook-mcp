@@ -2,7 +2,7 @@
  * Create folder functionality
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 const { getFolderIdByName } = require('../email/folder-utils');
 
 /**
@@ -25,7 +25,8 @@ async function handleCreateFolder(args) {
   
   try {
     // Get access token
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
     
     // Create folder with appropriate parent
     const result = await createMailFolder(accessToken, folderName, parentFolder);

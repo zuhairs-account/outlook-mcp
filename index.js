@@ -21,13 +21,14 @@
  *   - (fix) index.js: Auth handler dependencies bound before registration (Bug 3)
  */
 const { Server } = require("@modelcontextprotocol/sdk/server/index.js");
-const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
+const { StreamableHTTPServerTransport } = require("@modelcontextprotocol/sdk/server/streamableHttp.js");
 const config = require('./config');
+const express = require('express');
 
 // Import module tools
 // BEFORE: const { authTools } = require('./auth');
 // AFTER: Also import createTokenManager for Bug 3 fix (auth handler DI).
-const { authTools, createTokenManager } = require('./auth');
+const { authTools, createTokenManager, bearerTokenStorage } = require('./auth');
 const { calendarTools } = require('./calendar');
 const { emailTools } = require('./email');
 const { folderTools } = require('./folder');
@@ -262,7 +263,11 @@ server.fallbackRequestHandler = async (request) => {
       // AFTER: withTimeout(handler, args) wraps every invocation.
       // GOOD EFFECT: Hung handlers are cancelled after 60s with a clear error.
       try {
-        return await withTimeout(handler, args);
+        const byotToken = args.bearer_token || null;
+        const run = () => withTimeout(handler, args);
+        return byotToken
+          ? await bearerTokenStorage.run(byotToken, run)
+          : await run();
       } catch (handlerError) {
         // BEFORE: Handler exceptions propagated to the outer catch, which
         //         returned a generic error. No distinction between handler
@@ -300,7 +305,8 @@ server.fallbackRequestHandler = async (request) => {
 // ─── Lifecycle ────────────────────────────────────────────────────────
 
 process.on('SIGTERM', () => {
-  console.error('SIGTERM received — staying alive for MCP client');
+  console.error('SIGTERM received — shutting down gracefully');
+  process.exit(0);
 });
 
 // BEFORE: No uncaught exception handler — unhandled rejections crashed silently.
@@ -313,13 +319,65 @@ process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection (process staying alive):', reason);
 });
 
-// Start the server
-// Supergateway wraps this process and exposes it over SSE/HTTP.
-// StdioServerTransport is correct here — supergateway pipes stdin/stdout.
-const transport = new StdioServerTransport();
-server.connect(transport)
-  .then(() => console.error(`${config.SERVER_NAME} v${config.SERVER_VERSION} connected and listening`))
-  .catch(error => {
-    console.error(`Connection error: ${error.message}`);
-    process.exit(1);
-  });
+// HTTP server for Azure Web App deployments
+const app = express();
+app.use(express.json());
+const transports = new Map();
+
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', service: config.SERVER_NAME, tools: registry.size });
+});
+
+// Move server creation INSIDE the route so each session gets its own Server instance
+app.all('/mcp', async (req, res) => {
+  try {
+    const sessionId = req.headers['mcp-session-id'];
+    let transport;
+
+    if (sessionId && transports.has(sessionId)) {
+      transport = transports.get(sessionId);
+    } else if (!sessionId && req.method === 'POST') {
+      // Create a fresh Server + transport per session
+      const sessionServer = new Server(
+        { name: config.SERVER_NAME, version: config.SERVER_VERSION },
+        { capabilities: { tools: {} } }
+      );
+      sessionServer.fallbackRequestHandler = server.fallbackRequestHandler;
+
+      transport = new StreamableHTTPServerTransport({ path: "/mcp" });
+      await sessionServer.connect(transport);
+
+      const maybeRegister = () => {
+        if (transport.sessionId && !transports.has(transport.sessionId)) {
+          transports.set(transport.sessionId, transport);
+        }
+      };
+      maybeRegister();
+      res.on('finish', maybeRegister);
+    } else {
+      res.status(400).json({
+        error: { code: -32000, message: 'Invalid or missing MCP session. Start with POST /mcp.' }
+      });
+      return;
+    }
+
+    await transport.handleRequest(req, res, req.body);
+
+    if (req.method === 'DELETE' && sessionId && transports.has(sessionId)) {
+      const existing = transports.get(sessionId);
+      await existing.close();
+      transports.delete(sessionId);
+    }
+  } catch (error) {
+    console.error('MCP route error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: { code: -32603, message: `Internal server error: ${error.message}` }
+      });
+    }
+  }
+});
+
+app.listen(8000, () => {
+  console.error(`${config.SERVER_NAME} v${config.SERVER_VERSION} listening on port 8000`);
+});

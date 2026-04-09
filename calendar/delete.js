@@ -9,7 +9,7 @@
  *   - (c) calendar/delete.js: Error classification via shared classifyCalendarError()
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 const { validateEventId, graphAction, classifyCalendarError } = require('./index');
 
@@ -37,7 +37,8 @@ async function handleDeleteEvent(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // ── Shared graphAction Utility ──
     // BEFORE: const endpoint = `me/events/${eventId}`;

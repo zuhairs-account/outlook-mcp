@@ -12,7 +12,7 @@
  *   - (e) calendar/accept.js: Request dedup guard (eventId + action within 5s window)
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 const { validateEventId, sendRsvp, classifyCalendarError } = require('./index');
 
@@ -88,7 +88,8 @@ async function handleAcceptEvent(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // ── Shared sendRsvp Utility ──
     // BEFORE: const endpoint = `me/events/${eventId}/accept`;

@@ -2,7 +2,7 @@
  * OneDrive get download URL functionality
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 /**
  * Get download URL handler
@@ -23,7 +23,8 @@ async function handleDownload(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // Build endpoint - by ID or by path
     let endpoint;

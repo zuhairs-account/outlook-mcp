@@ -10,13 +10,78 @@
  *   - (e) calendar/list.js: Note about @odata.nextLink pagination for wide date ranges
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
+const config = require('../config');
 
-// BEFORE: const config = require('../config');
-//         — CALENDAR_SELECT_FIELDS and MAX_RESULT_COUNT from config singleton.
-// AFTER: Import shared constants and utilities from the barrel.
-// GOOD EFFECT: Single source of truth; shared error classification.
-const { CALENDAR_SELECT_FIELDS, mapEventToDto, classifyCalendarError } = require('./index');
+function mapEventToDto(event) {
+  return {
+    id: event.id,
+    subject: event.subject,
+    start: event.start,
+    end: event.end,
+    location: event.location?.displayName || 'No location',
+    organizer: event.organizer?.emailAddress?.name || 'Unknown',
+    isAllDay: event.isAllDay || false,
+    isCancelled: event.isCancelled || false,
+    bodyPreview: event.bodyPreview || '',
+    responseStatus: event.responseStatus?.response || 'none',
+    importance: event.importance || 'normal'
+  };
+}
+
+function classifyCalendarError(error, operation) {
+  if (error.message === 'Authentication required' || error.message === 'UNAUTHORIZED') {
+    return {
+      content: [{
+        type: "text",
+        text: "Authentication required or token expired. Please use the 'authenticate' tool first, or provide a fresh bearer token."
+      }]
+    };
+  }
+
+  if (error.message && error.message.includes('404')) {
+    return {
+      content: [{
+        type: "text",
+        text: "Event not found (404). It may have been deleted or the ID is incorrect."
+      }]
+    };
+  }
+
+  if (error.message && error.message.includes('409')) {
+    return {
+      content: [{
+        type: "text",
+        text: `Conflict (409) while ${operation}. The event may have been modified concurrently. Please retry.`
+      }]
+    };
+  }
+
+  if (error.message && error.message.includes('403')) {
+    return {
+      content: [{
+        type: "text",
+        text: "Access denied (403). The token may lack Calendars.ReadWrite scope. Re-authenticate with force=true."
+      }]
+    };
+  }
+
+  if (error.message && error.message.includes('429')) {
+    return {
+      content: [{
+        type: "text",
+        text: "Microsoft Graph API rate limit reached (429). Please wait a moment and try again."
+      }]
+    };
+  }
+
+  return {
+    content: [{
+      type: "text",
+      text: `Error ${operation}: ${error.message}`
+    }]
+  };
+}
 
 // ─── Request Deduplication Cache ──────────────────────────────────────
 // BEFORE: Identical list calls within seconds each hit the Graph API.
@@ -57,7 +122,8 @@ async function handleListEvents(args) {
   const count = Math.min(args.count || 10, 50);
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // ── Dedup cache check ──
     const cacheKey = _getCacheKey(count);
@@ -85,7 +151,7 @@ async function handleListEvents(args) {
       // BEFORE: $select: config.CALENDAR_SELECT_FIELDS — from config singleton.
       // AFTER: Shared CALENDAR_SELECT_FIELDS from barrel.
       // GOOD EFFECT: Single source of truth for calendar field selection.
-      $select: CALENDAR_SELECT_FIELDS
+      $select: config.CALENDAR_SELECT_FIELDS
     };
 
     // NOTE on pagination:

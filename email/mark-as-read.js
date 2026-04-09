@@ -11,7 +11,7 @@
  *   - (c): Error classification (auth, 403, 429, mailbox mismatch).
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 // BEFORE: Inline PATCH implementation — endpoint construction, callGraphAPI call,
 //         and error handling all in the handler body. Any future patch operation
@@ -45,7 +45,8 @@ async function handleMarkAsRead(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     try {
       // ── Shared patchMessage Utility ──

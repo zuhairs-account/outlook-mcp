@@ -3,7 +3,7 @@
  */
 const config = require('../config');
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 /**
  * Simple upload handler (for files < 4MB)
@@ -45,7 +45,8 @@ async function handleUpload(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // Normalize path
     const normalizedPath = path.replace(/^\/+|\/+$/g, '');

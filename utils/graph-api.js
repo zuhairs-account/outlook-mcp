@@ -111,8 +111,9 @@ async function callGraphAPI(accessToken, method, path, data = null, queryParams 
               reject(new Error(`Error parsing API response: ${error.message}`));
             }
           } else if (res.statusCode === 401) {
-            // Token expired or invalid
-            reject(new Error('UNAUTHORIZED'));
+            // Token expired/invalid; include response body for debugging.
+            const details = responseData ? `: ${responseData}` : '';
+            reject(new Error(`UNAUTHORIZED${details}`));
           } else {
             reject(new Error(`API call failed with status ${res.statusCode}: ${responseData}`));
           }

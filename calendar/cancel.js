@@ -10,7 +10,7 @@
  *   - (e) calendar/cancel.js: 409 Conflict handled explicitly (concurrent accept/decline)
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 const { validateEventId, graphAction, classifyCalendarError } = require('./index');
 
@@ -42,7 +42,8 @@ async function handleCancelEvent(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // ── Cancellation Message ──
     // BEFORE: const body = { comment: comment || "Cancelled via API" };

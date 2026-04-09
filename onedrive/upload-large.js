@@ -4,7 +4,7 @@
 const https = require('https');
 const config = require('../config');
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 const CHUNK_SIZE = 320 * 1024 * 10; // 3.2MB chunks (must be multiple of 320KB)
 
@@ -37,7 +37,8 @@ async function handleUploadLarge(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
     const contentBuffer = Buffer.from(content);
     const fileSize = contentBuffer.length;
 

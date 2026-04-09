@@ -3,6 +3,8 @@
  */
 const handleListRules = require('./list');
 const handleCreateRule = require('./create');
+const { callGraphAPI } = require('../utils/graph-api');
+const { getClient } = require('../auth');
 
 // Import getInboxRules for the edit sequence tool
 const { getInboxRules } = require('./list');
@@ -35,7 +37,8 @@ async function handleEditRuleSequence(args) {
   
   try {
     // Get access token
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
     
     // Get all rules
     const rules = await getInboxRules(accessToken);

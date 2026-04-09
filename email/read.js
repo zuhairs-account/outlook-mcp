@@ -13,7 +13,7 @@
  *   - (c) email/read.js: Error classification (auth, 403, 404, 429)
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 const { processHtmlEmail } = require('../utils/html-sanitizer');
 
 // BEFORE: const config = require('../config');
@@ -89,7 +89,8 @@ async function handleReadEmail(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // ── Cache check ──
     // BEFORE: Every read hit the Graph API.

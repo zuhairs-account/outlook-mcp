@@ -2,7 +2,7 @@
  * Create rule functionality
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 const { getFolderIdByName } = require('../email/folder-utils');
 const { getInboxRules } = require('./list');
 
@@ -66,7 +66,8 @@ async function handleCreateRule(args) {
   
   try {
     // Get access token
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
     
     // Create rule
     const result = await createInboxRule(accessToken, {

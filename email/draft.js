@@ -7,7 +7,7 @@
  *   - (c): Consistent recipient validation prevents silent failures from malformed addresses
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 // BEFORE: Recipient parsing was inline — to.split(',').map(...) with no validation.
 //         Identical duplication of the pattern in send.js.
@@ -27,7 +27,8 @@ async function handleDraftEmail(args) {
   const { to, cc, bcc, subject = '', body = '', importance = 'normal' } = args || {};
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // ── Recipient Parsing with Validation ──
     // BEFORE: const toRecipients = to

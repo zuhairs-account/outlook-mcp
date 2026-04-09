@@ -10,7 +10,7 @@
  *   - (e) calendar/decline.js: Same dedup guard as accept.js
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 const { validateEventId, sendRsvp, classifyCalendarError } = require('./index');
 
@@ -75,7 +75,8 @@ async function handleDeclineEvent(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // ── Shared sendRsvp Utility ──
     // BEFORE: const endpoint = `me/events/${eventId}/decline`;

@@ -2,7 +2,7 @@
  * List rules functionality
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 /**
  * List rules handler
@@ -14,7 +14,8 @@ async function handleListRules(args) {
   
   try {
     // Get access token
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
     
     // Get all inbox rules
     const rules = await getInboxRules(accessToken);

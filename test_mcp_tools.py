@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SSE MCP tools/list tester for supergateway.
+Streamable HTTP MCP tools/list tester.
 Usage: python test_mcp_tools.py <server-url>
        python test_mcp_tools.py https://webapp-outlook.azurewebsites.net
 """
@@ -9,36 +9,8 @@ import sys
 import json
 import urllib.request
 import urllib.error
-import threading
-import time
-
 BASE_URL = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "https://webapp-outlook.azurewebsites.net"
-
-message_endpoint = None
-sse_ready = threading.Event()
-
-def listen_sse():
-    global message_endpoint
-    req = urllib.request.Request(f"{BASE_URL}/sse")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as res:
-            last_event = None
-            for raw_line in res:
-                line = raw_line.decode("utf-8").strip()
-                if line.startswith("event:"):
-                    last_event = line[6:].strip()
-                elif line.startswith("data:"):
-                    data = line[5:].strip()
-                    if last_event == "endpoint":
-                        # data is the path e.g. /message?sessionId=abc123
-                        message_endpoint = BASE_URL + data
-                        print(f"   📡 Message endpoint: {message_endpoint}")
-                        sse_ready.set()
-                        return
-                    last_event = None
-    except Exception as e:
-        print(f"SSE error: {e}")
-        sse_ready.set()
+MCP_ENDPOINT = f"{BASE_URL}/mcp"
 
 def post(url, payload):
     data = json.dumps(payload).encode()
@@ -54,26 +26,11 @@ def post(url, payload):
 
 def run():
     print(f"\n🔌 Target: {BASE_URL}\n")
-
-    # Start SSE listener in background
-    print("1️⃣  Opening SSE connection...")
-    t = threading.Thread(target=listen_sse, daemon=True)
-    t.start()
-
-    # Wait for endpoint
-    if not sse_ready.wait(timeout=10):
-        print("❌ Timed out waiting for SSE endpoint")
-        return
-
-    if not message_endpoint:
-        print("❌ No message endpoint received")
-        return
-
-    print("   ✅ SSE connected\n")
+    print(f"1️⃣  Using MCP endpoint: {MCP_ENDPOINT}\n")
 
     # Step 2: initialize
     print("2️⃣  Sending initialize...")
-    resp = post(message_endpoint, {
+    resp = post(MCP_ENDPOINT, {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
@@ -87,7 +44,7 @@ def run():
 
     # Step 3: initialized notification
     print("3️⃣  Sending initialized notification...")
-    post(message_endpoint, {
+    post(MCP_ENDPOINT, {
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
     })
@@ -95,7 +52,7 @@ def run():
 
     # Step 4: tools/list
     print("4️⃣  Requesting tools/list...")
-    resp = post(message_endpoint, {
+    resp = post(MCP_ENDPOINT, {
         "jsonrpc": "2.0",
         "id": 2,
         "method": "tools/list",

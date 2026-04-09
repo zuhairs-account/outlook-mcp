@@ -2,7 +2,7 @@
  * Move emails functionality
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 const { getFolderIdByName } = require('../email/folder-utils');
 
 /**
@@ -35,7 +35,8 @@ async function handleMoveEmails(args) {
   
   try {
     // Get access token
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
     
     // Parse email IDs
     const ids = emailIds.split(',').map(id => id.trim()).filter(id => id);

@@ -2,7 +2,7 @@
  * OneDrive folder operations (create/delete)
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 /**
  * Create folder handler
@@ -23,7 +23,8 @@ async function handleCreateFolder(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // Build parent folder endpoint
     let endpoint;
@@ -95,7 +96,8 @@ async function handleDeleteItem(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // Get item details first (to confirm existence and get name)
     let endpoint;

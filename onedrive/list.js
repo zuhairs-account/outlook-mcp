@@ -3,7 +3,7 @@
  */
 const config = require('../config');
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 /**
  * List files handler
@@ -15,7 +15,8 @@ async function handleListFiles(args) {
   const count = args.count || 25;
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // Build endpoint - root or specific path
     let endpoint;

@@ -3,7 +3,7 @@
  */
 const config = require('../config');
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 /**
  * Search files handler
@@ -24,7 +24,8 @@ async function handleSearchFiles(args) {
   }
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // Use the search endpoint
     const endpoint = `me/drive/search(q='${encodeURIComponent(query)}')`;

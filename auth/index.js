@@ -1,69 +1,89 @@
 /**
- * Authentication module for Outlook MCP server
- * @module auth
+ * Authentication module for Outlook MCP server.
+ *
+ * Canva-style resolution order:
+ * 1) explicit bearer_token arg
+ * 2) per-request context (AsyncLocalStorage)
+ * 3) Authorization header from raw HTTP request (if available)
+ * 4) MS_ACCESS_TOKEN env var
+ * 5) stored OAuth token manager
  */
-
-// BEFORE: const tokenManager = require('./token-manager');
-// AFTER: Import the class, not a singleton instance.
-// GOOD EFFECT: Enables factory-based DI — consumers are decoupled from
-//              the concrete token-manager.js implementation.
+const { AsyncLocalStorage } = require('async_hooks');
 const TokenManager = require('./token-manager');
 const { authTools } = require('./tools');
-
-/**
- * Factory function to create a TokenManager instance with the given config.
- * Consumers should use this instead of importing token-manager directly.
- * @param {object} [config] - Optional config overrides
- * @returns {TokenManager} - A configured TokenManager instance
- *
- * GOOD EFFECT: Enables dependency injection — tests can pass mock config,
- * production code passes real config, and no one is coupled to the concrete
- * file path of token-manager.js.
- */
-function createTokenManager(config) {
-  return new TokenManager(config);
-}
-
-/**
- * Ensures the user is authenticated and returns an access token.
- *
- * @param {TokenManager} tokenManagerInstance - Injected token manager
- * @param {boolean} forceNew - Whether to force a new authentication
- * @returns {Promise<string>} - Access token
- * @throws {Error} - If authentication fails
- */
-// AFTER
 const config = require('../config');
 
-// Module-level singleton — created once, reused on every call
+const bearerTokenStorage = new AsyncLocalStorage();
 const _defaultTokenManager = new TokenManager(config);
 
-async function ensureAuthenticated(tokenManagerInstance, forceNew = false) {
-  // If no instance injected (the common case across all 28 tool files),
-  // fall back to the module-level singleton. Injected instance still works
-  // for tests or callers that want to provide their own.
-  const tm = tokenManagerInstance || _defaultTokenManager;
+class OutlookClient {
+  constructor(token) {
+    if (!token || typeof token !== 'string') {
+      throw new Error('OutlookClient requires a non-empty token string.');
+    }
+    this._token = token;
+  }
 
-  try {
-    if (forceNew) {
-      throw new Error('Authentication required. Please re-authenticate.');
-    }
-    const accessToken = await tm.getValidAccessToken();
-    if (!accessToken) {
-      throw new Error('Authentication required. No valid token found.');
-    }
-    return accessToken;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Authentication failed: ${message}`);
+  authHeaders(contentType = null) {
+    const headers = { Authorization: `Bearer ${this._token}` };
+    if (contentType) headers['Content-Type'] = contentType;
+    return headers;
+  }
+
+  get rawToken() {
+    return this._token;
   }
 }
 
+function createTokenManager(cfg) {
+  return new TokenManager(cfg);
+}
+
+async function resolveToken(bearerToken = null, httpRequest = null, forceNew = false, tokenManagerInstance = null) {
+  if (bearerToken && typeof bearerToken === 'string' && bearerToken.trim()) {
+    return bearerToken.trim();
+  }
+
+  const storedToken = bearerTokenStorage.getStore();
+  if (storedToken && typeof storedToken === 'string' && storedToken.trim()) {
+    return storedToken.trim();
+  }
+
+  if (httpRequest) {
+    const raw = (httpRequest.headers?.authorization || httpRequest.headers?.Authorization || '').trim();
+    if (raw.startsWith('Bearer ')) {
+      const token = raw.slice(7).trim();
+      if (token) return token;
+    }
+  }
+
+  const envToken = (process.env.MS_ACCESS_TOKEN || '').trim();
+  if (envToken) return envToken;
+
+  if (!forceNew) {
+    const tm = tokenManagerInstance || _defaultTokenManager;
+    const accessToken = await tm.getValidAccessToken();
+    if (accessToken && accessToken.trim()) return accessToken.trim();
+  }
+
+  throw new Error('Authentication required. No valid token found from header, token manager, or env var.');
+}
+
+async function getClient(bearerToken = null, httpRequest = null, forceNew = false, tokenManagerInstance = null) {
+  const token = await resolveToken(bearerToken, httpRequest, forceNew, tokenManagerInstance);
+  return new OutlookClient(token);
+}
+
+// Backward-compatible shim used by existing handlers.
+async function ensureAuthenticated(tokenManagerInstance = null, forceNew = false, bearerToken = null, httpRequest = null) {
+  return resolveToken(bearerToken, httpRequest, forceNew, tokenManagerInstance);
+}
+
 module.exports = {
-  // BEFORE: tokenManager (concrete singleton export)
-  // AFTER: createTokenManager (factory function)
-  // GOOD EFFECT: Barrel enforces the intended interface — consumers go
-  //              through the factory and never import internals directly.
+  bearerTokenStorage,
+  OutlookClient,
+  getClient,
+  resolveToken,
   createTokenManager,
   authTools,
   ensureAuthenticated

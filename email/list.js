@@ -9,15 +9,9 @@
  *   - (e) email/list.js: Pagination already via callGraphAPIPaginated — verified
  */
 const { callGraphAPI, callGraphAPIPaginated } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 const { resolveFolderPath } = require('./folder-utils');
-
-// BEFORE: const config = require('../config');
-//         — EMAIL_SELECT_FIELDS read from config.js (or hardcoded inline).
-// AFTER: Import from the barrel's shared constant.
-// GOOD EFFECT: Single source of truth for field selection; adding/removing
-//              a field happens in one place (email/index.js).
-const { EMAIL_SELECT_FIELDS } = require('./index');
+const config = require('../config');
 
 // ─── Request Deduplication Cache ──────────────────────────────────────
 // BEFORE: Identical list calls within seconds (e.g., LLM retry, parallel
@@ -62,7 +56,8 @@ async function handleListEmails(args) {
   const requestedCount = args.count || 10;
 
   try {
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
 
     // ── Dedup cache check ──
     // BEFORE: Every call hit the Graph API, even identical back-to-back calls.
@@ -84,7 +79,7 @@ async function handleListEmails(args) {
     const queryParams = {
       $top: Math.min(50, requestedCount),
       $orderby: 'receivedDateTime desc',
-      $select: EMAIL_SELECT_FIELDS
+      $select: config.EMAIL_SELECT_FIELDS
     };
 
     // Pagination is already handled by callGraphAPIPaginated
@@ -126,11 +121,11 @@ async function handleListEmails(args) {
     // AFTER: Classify known error types and return actionable messages.
     // GOOD EFFECT: Auth errors suggest re-auth; 429 surfaces retry hint;
     //              the LLM gets actionable information instead of raw error strings.
-    if (error.message === 'Authentication required') {
+    if (error.message === 'Authentication required' || error.message === 'UNAUTHORIZED') {
       return {
         content: [{
           type: "text",
-          text: "Authentication required. Please use the 'authenticate' tool first."
+          text: "Authentication required or token expired. Please use the 'authenticate' tool first, or provide a fresh bearer token."
         }]
       };
     }

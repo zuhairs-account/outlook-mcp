@@ -2,7 +2,7 @@
  * List folders functionality
  */
 const { callGraphAPI } = require('../utils/graph-api');
-const { ensureAuthenticated } = require('../auth');
+const { getClient } = require('../auth');
 
 /**
  * List folders handler
@@ -15,7 +15,8 @@ async function handleListFolders(args) {
   
   try {
     // Get access token
-    const accessToken = await ensureAuthenticated();
+    const client = await getClient(args.bearer_token || null);
+    const accessToken = client.rawToken;
     
     // Get all mail folders
     const folders = await getAllFoldersHierarchy(accessToken, includeItemCounts);

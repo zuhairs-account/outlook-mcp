@@ -7,17 +7,46 @@
  *   - (c) calendar/create.js: Attendee email validation via buildEventPayload()
  *   - (c) calendar/create.js: Error classification via shared classifyCalendarError()
  *   - (e) calendar/create.js: Idempotency note — duplicate invocations create duplicate events
+ *
+ * BUG FIX: Timezone-aware event creation.
+ *   BEFORE: buildEventPayload() always fell back to DEFAULT_TIMEZONE (often 'UTC'),
+ *           so "9:00 AM" was stored as 9:00 UTC and displayed as 2:00 PM in PKT (UTC+5).
+ *   AFTER:  If start/end are bare local datetime strings (no Z / no offset), we detect
+ *           the server's local IANA timezone via Intl and pass it in the payload so
+ *           Graph API interprets the time correctly.
  */
-const crypto = require('crypto');
 const { callGraphAPI } = require('../utils/graph-api');
 const { getClient } = require('../auth');
 const { DEFAULT_TIMEZONE } = require('../config');
 
-// BEFORE: Payload construction was inline imperative code with scattered conditionals.
-// AFTER: Import shared utilities from barrel.
-// GOOD EFFECT: Explicit, testable data contract; error classification is consistent.
 // Import from shared.js (not ./index) to avoid circular dependency.
 const { buildEventPayload, classifyCalendarError } = require('./shared');
+// Bust the list cache after a successful create so list-events returns fresh data
+const { invalidateListCache } = require('./list');
+
+/**
+ * Detect the effective timezone for a datetime string.
+ *
+ * If the string already carries UTC offset info (ends with Z or ±HH:MM),
+ * we honour it as-is and tell Graph it's UTC (the offset is embedded).
+ * If it's a bare local string like "2026-04-15T09:00:00", we use the
+ * server's local IANA timezone so Graph stores it in the right zone.
+ *
+ * @param {string} dateTimeStr
+ * @param {string} fallback  - config DEFAULT_TIMEZONE (last resort)
+ * @returns {string} IANA timezone string
+ */
+function resolveTimezone(dateTimeStr, fallback) {
+  if (!dateTimeStr) return fallback || 'UTC';
+  // Already has offset info — treat as UTC (offset is self-describing)
+  if (/[zZ]$|[+\-]\d{2}:\d{2}$/.test(dateTimeStr)) return 'UTC';
+  // Bare local string — use server's local timezone
+  try {
+    const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (localTz) return localTz;
+  } catch (_) {}
+  return fallback || 'UTC';
+}
 
 /**
  * Create event handler
@@ -36,19 +65,14 @@ async function handleCreateEvent(args) {
     };
   }
 
-  // ── Date Input Validation ──
-  // BEFORE: Date strings passed to the OData query were not validated.
-  //         Malformed ISO strings produced opaque Graph 400 errors.
-  // AFTER: Validate with Date.parse before the API call.
-  // GOOD EFFECT: Clear error message for malformed dates instead of cryptic Graph response.
   const startDateTime = typeof start === 'string' ? start : start.dateTime;
-  const endDateTime = typeof end === 'string' ? end : end.dateTime;
+  const endDateTime   = typeof end   === 'string' ? end   : end.dateTime;
 
   if (isNaN(Date.parse(startDateTime))) {
     return {
       content: [{
         type: "text",
-        text: `Invalid start date format: "${startDateTime}". Please use ISO 8601 format (e.g., 2025-06-15T09:00:00).`
+        text: `Invalid start date format: "${startDateTime}". Please use ISO 8601 format (e.g., 2026-04-15T09:00:00).`
       }]
     };
   }
@@ -57,53 +81,47 @@ async function handleCreateEvent(args) {
     return {
       content: [{
         type: "text",
-        text: `Invalid end date format: "${endDateTime}". Please use ISO 8601 format (e.g., 2025-06-15T10:00:00).`
+        text: `Invalid end date format: "${endDateTime}". Please use ISO 8601 format (e.g., 2026-04-15T10:00:00).`
       }]
     };
   }
+
+  // ── Timezone Resolution ──
+  // BUG FIX: Determine the correct timezone for bare local datetime strings.
+  // If start already carries a timezone object, use that; otherwise resolve.
+  const startTz = (typeof start === 'object' && start.timeZone)
+    ? start.timeZone
+    : resolveTimezone(startDateTime, DEFAULT_TIMEZONE);
+
+  const endTz = (typeof end === 'object' && end.timeZone)
+    ? end.timeZone
+    : resolveTimezone(endDateTime, DEFAULT_TIMEZONE);
 
   try {
     const client = await getClient(args.bearer_token || null);
     const accessToken = client.rawToken;
 
-    // ── Payload Construction via Shared Builder ──
-    // BEFORE: const bodyContent = { subject, start: { dateTime: ... }, ... };
-    //         — inline imperative construction with scattered conditionals.
-    // AFTER: const payload = buildEventPayload(args, DEFAULT_TIMEZONE);
-    // GOOD EFFECT: Data contract is explicit and testable; defaults are clear;
-    //              attendee email validation happens inside the builder.
-    const payload = buildEventPayload(
-      { subject, start, end, attendees, body, location },
-      DEFAULT_TIMEZONE || 'UTC'
-    );
+    // Pass normalised start/end objects so buildEventPayload gets the timezone.
+    const normalizedStart = { dateTime: startDateTime, timeZone: startTz };
+    const normalizedEnd   = { dateTime: endDateTime,   timeZone: endTz };
 
-    // ── Idempotency Note ──
-    // BEFORE: No idempotency key — duplicate tool invocations (LLM retry,
-    //         network hiccup) create duplicate calendar events.
-    // AFTER: Pass a client-generated correlation ID in the Prefer header.
-    //        Note: Graph API does not officially support idempotency keys for
-    //        calendar events, but the correlation ID aids debugging.
-    //        The real fix is for the LLM to check existing events first.
-    // GOOD EFFECT: Correlation ID visible in Graph API logs for debugging
-    //              duplicate event issues.
-    // TODO: Implement pre-check against /me/calendarView for time conflicts.
+    const payload = buildEventPayload(
+      { subject, start: normalizedStart, end: normalizedEnd, attendees, body, location },
+      startTz   // also used as the default for any field that omits its zone
+    );
 
     const response = await callGraphAPI(accessToken, 'POST', 'me/events', payload);
 
-    // ── Richer Response ──
-    // BEFORE: Only returned subject in success message.
-    // AFTER: Return event ID and time range for confirmation.
-    // GOOD EFFECT: LLM can reference the event ID for follow-up operations.
+    // Bust the list cache so an immediate list-events call sees the new event
+    invalidateListCache();
+
     return {
       content: [{
         type: "text",
-        text: `Event '${subject}' has been successfully created.\n\nEvent ID: ${response.id}\nStart: ${startDateTime}\nEnd: ${endDateTime}${attendees && attendees.length > 0 ? `\nAttendees: ${attendees.join(', ')}` : ''}`
+        text: `Event '${subject}' has been successfully created.\n\nEvent ID: ${response.id}\nStart: ${startDateTime} (${startTz})\nEnd: ${endDateTime} (${endTz})${attendees && attendees.length > 0 ? `\nAttendees: ${attendees.join(', ')}` : ''}`
       }]
     };
   } catch (error) {
-    // BEFORE: Only checked for 'Authentication required'.
-    // AFTER: Shared classifyCalendarError() handles auth, 403, 409, 429.
-    // GOOD EFFECT: Consistent, actionable error messages.
     return classifyCalendarError(error, 'creating event');
   }
 }

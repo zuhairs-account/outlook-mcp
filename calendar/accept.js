@@ -14,7 +14,8 @@
 const { callGraphAPI } = require('../utils/graph-api');
 const { getClient } = require('../auth');
 
-const { validateEventId, sendRsvp, classifyCalendarError } = require('./index');
+// Import from shared.js (not ./index) to avoid circular dependency.
+const { validateEventId, sendRsvp, classifyCalendarError } = require('./shared');
 
 // ─── RSVP Deduplication Guard ─────────────────────────────────────────
 // BEFORE: Repeated accept calls on the same event were silently duplicated

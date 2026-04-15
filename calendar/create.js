@@ -16,7 +16,8 @@ const { DEFAULT_TIMEZONE } = require('../config');
 // BEFORE: Payload construction was inline imperative code with scattered conditionals.
 // AFTER: Import shared utilities from barrel.
 // GOOD EFFECT: Explicit, testable data contract; error classification is consistent.
-const { buildEventPayload, classifyCalendarError } = require('./index');
+// Import from shared.js (not ./index) to avoid circular dependency.
+const { buildEventPayload, classifyCalendarError } = require('./shared');
 
 /**
  * Create event handler

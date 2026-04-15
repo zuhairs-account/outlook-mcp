@@ -322,6 +322,15 @@ process.on('unhandledRejection', (reason) => {
 // HTTP server for Azure Web App deployments
 const app = express();
 app.use(express.json());
+
+// Temporary debug logger — remove after debugging
+app.use((req, res, next) => {
+  console.error(`[DEBUG] ${req.method} ${req.path}`);
+  console.error(`[DEBUG] Headers:`, JSON.stringify(req.headers, null, 2));
+  console.error(`[DEBUG] Body:`, JSON.stringify(req.body, null, 2));
+  next();
+});
+
 const transports = new Map();
 
 app.get('/health', (_req, res) => {
@@ -331,6 +340,7 @@ app.get('/health', (_req, res) => {
 // Move server creation INSIDE the route so each session gets its own Server instance
 app.all('/mcp', async (req, res) => {
   try {
+    req.headers['accept'] = 'application/json, text/event-stream'; 
     const sessionId = req.headers['mcp-session-id'];
     let transport;
 
@@ -361,7 +371,15 @@ app.all('/mcp', async (req, res) => {
       return;
     }
 
-    await transport.handleRequest(req, res, req.body);
+    // await transport.handleRequest(req, res, req.body);
+    const authHeader = req.headers['authorization'] || '';
+    const incomingToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+
+    if (incomingToken) {
+      await bearerTokenStorage.run(incomingToken, () => transport.handleRequest(req, res, req.body));
+    } else {
+      await transport.handleRequest(req, res, req.body);
+    }
 
     if (req.method === 'DELETE' && sessionId && transports.has(sessionId)) {
       const existing = transports.get(sessionId);

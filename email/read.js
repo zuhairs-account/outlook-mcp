@@ -16,11 +16,10 @@ const { callGraphAPI } = require('../utils/graph-api');
 const { getClient } = require('../auth');
 const { processHtmlEmail } = require('../utils/html-sanitizer');
 
-// BEFORE: const config = require('../config');
-//         — EMAIL_DETAIL_FIELDS read from config.js or hardcoded inline.
-// AFTER: Import shared constants and utilities from the barrel.
-// GOOD EFFECT: Single source of truth; shared validation.
-const { EMAIL_DETAIL_FIELDS, validateEmailId } = require('./index');
+// Import from shared.js (not ./index) to avoid circular dependency.
+// index.js imports all handlers; handlers importing back from index.js
+// causes EMAIL_DETAIL_FIELDS and validateEmailId to resolve as undefined.
+const { EMAIL_DETAIL_FIELDS, validateEmailId } = require('./shared');
 
 // ─── Configuration Constants ──────────────────────────────────────────
 // BEFORE: No body size limit — very large HTML emails (newsletters, etc.)

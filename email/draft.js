@@ -9,12 +9,10 @@
 const { callGraphAPI } = require('../utils/graph-api');
 const { getClient } = require('../auth');
 
-// BEFORE: Recipient parsing was inline — to.split(',').map(...) with no validation.
-//         Identical duplication of the pattern in send.js.
-// AFTER: Import shared parseRecipients from barrel.
-// GOOD EFFECT: Invalid email addresses caught before API call; no duplication
-//              with send.js — both files use the same validated parsing.
-const { parseRecipients } = require('./index');
+// Import from shared.js (not ./index) to avoid circular dependency.
+// index.js imports all handlers; handlers importing back from index.js
+// causes parseRecipients to resolve as undefined at module load time.
+const { parseRecipients } = require('./shared');
 
 /**
  * Draft email handler

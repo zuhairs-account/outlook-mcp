@@ -336,7 +336,7 @@ const server = http.createServer((req, res) => {
 
 // ─── Start Server ─────────────────────────────────────────────────────
 
-const PORT = parseInt(process.env.AUTH_SERVER_PORT || '3333', 10);
+const PORT = parseInt(process.env.AUTH_SERVER_PORT || '5000', 10);
 
 server.listen(PORT, () => {
   console.log(`Authentication server running at http://localhost:${PORT}`);

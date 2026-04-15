@@ -12,7 +12,8 @@
 const { callGraphAPI } = require('../utils/graph-api');
 const { getClient } = require('../auth');
 
-const { validateEventId, graphAction, classifyCalendarError } = require('./index');
+// Import from shared.js (not ./index) to avoid circular dependency.
+const { validateEventId, graphAction, classifyCalendarError } = require('./shared');
 
 /**
  * Cancel event handler

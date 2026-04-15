@@ -13,13 +13,10 @@
 const { callGraphAPI } = require('../utils/graph-api');
 const { getClient } = require('../auth');
 
-// BEFORE: Inline PATCH implementation — endpoint construction, callGraphAPI call,
-//         and error handling all in the handler body. Any future patch operation
-//         would duplicate the same pattern.
-// AFTER: Import shared patchMessage and validateEmailId from barrel.
-// GOOD EFFECT: One tested function for all message PATCH operations; input
-//              validation is consistent across all email operations.
-const { patchMessage, validateEmailId } = require('./index');
+// Import from shared.js (not ./index) to avoid circular dependency.
+// index.js imports all handlers; handlers importing back from index.js
+// causes patchMessage and validateEmailId to resolve as undefined.
+const { patchMessage, validateEmailId } = require('./shared');
 
 /**
  * Mark email as read handler

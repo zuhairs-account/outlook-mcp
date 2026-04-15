@@ -11,11 +11,10 @@ const { callGraphAPI, callGraphAPIPaginated } = require('../utils/graph-api');
 const { getClient } = require('../auth');
 const { resolveFolderPath } = require('./folder-utils');
 
-// BEFORE: const config = require('../config');
-//         — EMAIL_SELECT_FIELDS read from config.js or hardcoded.
-// AFTER: Import from the barrel's shared constant.
-// GOOD EFFECT: Single source of truth for field selection.
-const { EMAIL_SELECT_FIELDS } = require('./index');
+// Import from shared.js (not ./index) to avoid circular dependency.
+// index.js imports all handlers; handlers importing back from index.js
+// causes constants to resolve as undefined at module load time.
+const { EMAIL_SELECT_FIELDS } = require('./shared');
 
 // ─── KQL Sanitisation ─────────────────────────────────────────────────
 // BEFORE: User-supplied search strings were interpolated directly into the
